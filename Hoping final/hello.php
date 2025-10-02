@@ -1,131 +1,225 @@
-diff --git a/hello.php b/hello.php
-index fc8027fa65c3048fbc679ccf906dd4e7b21eb316..03c845241ccceaaf261928103e6af5818dd253c3 100644
---- a/hello.php
-+++ b/hello.php
-@@ -1,46 +1,87 @@
--<!DOCTYPE html>
--<html lang="en">
--<head>
--    <meta charset="UTF-8">
--    <meta name="viewport" content="width=device-width, initial-scale=1.0">
--    <title>WELCOME Page</title>
--    <style>
-+<?php
-+session_start();
-+require 'config.php';
- 
--    h1 {
--      font-family: 'Times New Roman', sans-serif;
--      background-image: linear-gradient(to right, #4776E6, #8E54E9);
--      display: flex;
--      justify-content: center;
--      align-items: center;
--      height: 100vh;
--      margin: 0;
--    }
--    button{
--        justify-content: center;
--      align-items: center;
--    }
--    
--#top-right-button {
--  position: absolute;
--  top: 0;
--  right: 0;
--  margin: 10px;
--  background-color: #4CAF50;
--  color: #ffffff;
--  border: none;
--  padding: 10px 20px;
--  font-size: 16px;
--  cursor: pointer;
-+if (!isset($_SESSION['user_id'])) {
-+    header('Location: auth.php');
-+    exit;
- }
- 
--#top-right-button:hover {
--  background-color: #3e8e41;
-+$userId = $_SESSION['user_id'];
-+
-+$summary = [
-+    'reservations' => 0,
-+    'orders' => 0,
-+    'deliveries' => 0,
-+];
-+
-+try {
-+    $stmt = $conn->prepare('SELECT COUNT(*) AS total FROM Reservation WHERE CustomerID = (SELECT CustomerID FROM Customer WHERE UserID = ?)');
-+    $stmt->bind_param('i', $userId);
-+    $stmt->execute();
-+    $result = $stmt->get_result()->fetch_assoc();
-+    $summary['reservations'] = (int)($result['total'] ?? 0);
-+    $stmt->close();
-+
-+    $stmt = $conn->prepare('SELECT COUNT(*) AS total FROM CustomerOrder WHERE CustomerID = (SELECT CustomerID FROM Customer WHERE UserID = ?)');
-+    $stmt->bind_param('i', $userId);
-+    $stmt->execute();
-+    $result = $stmt->get_result()->fetch_assoc();
-+    $summary['orders'] = (int)($result['total'] ?? 0);
-+    $stmt->close();
-+
-+    $stmt = $conn->prepare('SELECT COUNT(*) AS total FROM Delivery d INNER JOIN CustomerOrder o ON d.OrderID = o.OrderID WHERE o.CustomerID = (SELECT CustomerID FROM Customer WHERE UserID = ?)');
-+    $stmt->bind_param('i', $userId);
-+    $stmt->execute();
-+    $result = $stmt->get_result()->fetch_assoc();
-+    $summary['deliveries'] = (int)($result['total'] ?? 0);
-+    $stmt->close();
-+} catch (mysqli_sql_exception $e) {
-+    // Keep dashboard available even if optional tables are empty/missing
- }
--</style>
-+?>
-+<!DOCTYPE html>
-+<html lang="en">
-+<head>
-+  <meta charset="UTF-8">
-+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-+  <title>Servesoft Dashboard</title>
-+  <link rel="stylesheet" href="styles.css">
- </head>
- <body>
--    <h1>WELCOME</h1>
--    <button id="top-right-button"><a href="logout.php">Logout</a></button>
--    
-+  <section class="dashboard-shell">
-+    <article class="card">
-+      <header>
-+        <h1>Hi <?= htmlspecialchars($_SESSION['name'] ?? 'Servesoft User') ?>!</h1>
-+        <p>Here is a quick snapshot of your Servesoft activity.</p>
-+      </header>
-+      <section class="summary">
-+        <div class="summary-row">
-+          <div class="summary-pill">
-+            <h3>Reservations</h3>
-+            <p><?= $summary['reservations'] ?></p>
-+          </div>
-+          <div class="summary-pill">
-+            <h3>Orders</h3>
-+            <p><?= $summary['orders'] ?></p>
-+          </div>
-+          <div class="summary-pill">
-+            <h3>Deliveries</h3>
-+            <p><?= $summary['deliveries'] ?></p>
-+          </div>
-+        </div>
-+      </section>
-+      <section class="summary">
-+        <h2>Your Profile</h2>
-+        <p><strong>Email:</strong> <?= htmlspecialchars($_SESSION['email'] ?? '') ?></p>
-+        <p><strong>Phone:</strong> <?= htmlspecialchars($_SESSION['phone'] ?? 'Not provided') ?></p>
-+      </section>
-+      <div class="actions">
-+        <form action="logout.php" method="post">
-+          <button class="secondary" type="submit" name="logout" value="1">Logout</button>
-+        </form>
-+      </div>
-+    </article>
-+  </section>
- </body>
--</html>
-+</html>
+<?php
+session_start();
+require 'config.php';
+require 'session_helper.php';
+
+if (!isset($_SESSION['user_id'])) {
+    header('Location: auth.php');
+    exit;
+}
+
+$userId = $_SESSION['user_id'];
+$roles = getUserRoles($conn, $userId);
+
+$primaryRole = 'customer';
+$roleData = null;
+
+foreach ($roles as $role) {
+    if ($role['type'] === 'admin') {
+        $primaryRole = 'admin';
+        $roleData = $role;
+        break;
+    } elseif ($role['type'] === 'manager') {
+        $primaryRole = 'manager';
+        $roleData = $role;
+        break;
+    } elseif ($role['type'] === 'driver') {
+        $primaryRole = 'driver';
+        $roleData = $role;
+    } elseif ($role['type'] === 'customer' && $primaryRole === 'customer') {
+        $roleData = $role;
+    }
+}
+
+$summary = [];
+
+if ($primaryRole === 'customer' && $roleData) {
+    $customerId = $roleData['id'];
+    try {
+        $stmt = $conn->prepare('SELECT COUNT(*) AS total FROM Reservation WHERE CustomerID = ?');
+        $stmt->bind_param('i', $customerId);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        $summary['reservations'] = (int)($result['total'] ?? 0);
+        $stmt->close();
+
+        $stmt = $conn->prepare('SELECT COUNT(*) AS total FROM CustomerOrder WHERE CustomerID = ?');
+        $stmt->bind_param('i', $customerId);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        $summary['orders'] = (int)($result['total'] ?? 0);
+        $stmt->close();
+    } catch (mysqli_sql_exception $e) {}
+} elseif ($primaryRole === 'manager' && $roleData) {
+    $restaurantId = $roleData['restaurantId'];
+    try {
+        $stmt = $conn->prepare('SELECT COUNT(*) AS total FROM CustomerOrder WHERE RestaurantID = ? AND OrderStatus = "RECEIVED"');
+        $stmt->bind_param('i', $restaurantId);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        $summary['pending_orders'] = (int)($result['total'] ?? 0);
+        $stmt->close();
+
+        $stmt = $conn->prepare('SELECT COUNT(*) AS total FROM RestaurantTable WHERE RestaurantID = ? AND Status = "SEATED"');
+        $stmt->bind_param('i', $restaurantId);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        $summary['active_tables'] = (int)($result['total'] ?? 0);
+        $stmt->close();
+
+        $stmt = $conn->prepare('SELECT RestaurantName FROM Restaurant WHERE RestaurantID = ?');
+        $stmt->bind_param('i', $restaurantId);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        $summary['restaurant_name'] = $result['RestaurantName'] ?? 'Your Restaurant';
+        $stmt->close();
+    } catch (mysqli_sql_exception $e) {}
+} elseif ($primaryRole === 'driver' && $roleData) {
+    $driverId = $roleData['id'];
+    try {
+        $stmt = $conn->prepare('SELECT COUNT(*) AS total FROM Delivery WHERE DeliveryAgentID = ? AND Status IN ("ASSIGNED", "ACCEPTED")');
+        $stmt->bind_param('i', $driverId);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        $summary['active_deliveries'] = (int)($result['total'] ?? 0);
+        $stmt->close();
+
+        $stmt = $conn->prepare('SELECT COUNT(*) AS total FROM Delivery WHERE DeliveryAgentID = ? AND Status = "DELIVERED"');
+        $stmt->bind_param('i', $driverId);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        $summary['completed_deliveries'] = (int)($result['total'] ?? 0);
+        $stmt->close();
+    } catch (mysqli_sql_exception $e) {}
+} elseif ($primaryRole === 'admin') {
+    try {
+        $stmt = $conn->query('SELECT COUNT(*) AS total FROM Restaurant');
+        $result = $stmt->fetch_assoc();
+        $summary['restaurants'] = (int)($result['total'] ?? 0);
+        $stmt->close();
+
+        $stmt = $conn->query('SELECT COUNT(*) AS total FROM User');
+        $result = $stmt->fetch_assoc();
+        $summary['users'] = (int)($result['total'] ?? 0);
+        $stmt->close();
+
+        $stmt = $conn->query('SELECT COUNT(*) AS total FROM CustomerOrder WHERE DATE(OrderDate) = CURDATE()');
+        $result = $stmt->fetch_assoc();
+        $summary['today_orders'] = (int)($result['total'] ?? 0);
+        $stmt->close();
+    } catch (mysqli_sql_exception $e) {}
+}
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Servesoft Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <section class="auth-shell">
+    <article class="card">
+      <header>
+        <h1>Hi <?= htmlspecialchars($_SESSION['name'] ?? 'Servesoft User') ?>!</h1>
+        <p>Your role: <strong><?= strtoupper($primaryRole) ?></strong></p>
+      </header>
+
+      <?php if ($primaryRole === 'customer'): ?>
+        <section class="summary">
+          <h2>Customer Dashboard</h2>
+          <div class="grid-two">
+            <div class="card">
+              <h3>Reservations</h3>
+              <p class="tag success"><?= $summary['reservations'] ?? 0 ?></p>
+            </div>
+            <div class="card">
+              <h3>Orders</h3>
+              <p class="tag info"><?= $summary['orders'] ?? 0 ?></p>
+            </div>
+          </div>
+          <div class="callout">
+            API endpoints are ready. Use api_customer.php?action=get_menu, add_to_cart, place_order, get_orders, create_reservation
+          </div>
+        </section>
+
+      <?php elseif ($primaryRole === 'manager'): ?>
+        <section class="summary">
+          <h2>Manager Dashboard - <?= htmlspecialchars($summary['restaurant_name'] ?? 'Restaurant') ?></h2>
+          <div class="grid-three">
+            <div class="card">
+              <h3>Pending Orders</h3>
+              <p class="tag warning"><?= $summary['pending_orders'] ?? 0 ?></p>
+            </div>
+            <div class="card">
+              <h3>Active Tables</h3>
+              <p class="tag success"><?= $summary['active_tables'] ?? 0 ?></p>
+            </div>
+            <div class="card">
+              <h3>Restaurant</h3>
+              <p class="tag"><?= htmlspecialchars($summary['restaurant_name'] ?? 'N/A') ?></p>
+            </div>
+          </div>
+          <div class="callout">
+            API endpoints are ready. Use api_manager.php?action=get_orders, update_order_status, get_tables, update_table_status, get_menu, add_menu_item, get_reservations, get_staff, assign_delivery
+          </div>
+        </section>
+
+      <?php elseif ($primaryRole === 'driver'): ?>
+        <section class="summary">
+          <h2>Driver Dashboard</h2>
+          <div class="grid-two">
+            <div class="card">
+              <h3>Active Deliveries</h3>
+              <p class="tag warning"><?= $summary['active_deliveries'] ?? 0 ?></p>
+            </div>
+            <div class="card">
+              <h3>Completed Today</h3>
+              <p class="tag success"><?= $summary['completed_deliveries'] ?? 0 ?></p>
+            </div>
+          </div>
+          <div class="callout">
+            API endpoints are ready. Use api_driver.php?action=get_deliveries, accept_delivery, decline_delivery, update_delivery_milestone
+          </div>
+        </section>
+
+      <?php elseif ($primaryRole === 'admin'): ?>
+        <section class="summary">
+          <h2>Admin Dashboard</h2>
+          <div class="grid-three">
+            <div class="card">
+              <h3>Restaurants</h3>
+              <p class="tag"><?= $summary['restaurants'] ?? 0 ?></p>
+            </div>
+            <div class="card">
+              <h3>Total Users</h3>
+              <p class="tag info"><?= $summary['users'] ?? 0 ?></p>
+            </div>
+            <div class="card">
+              <h3>Today's Orders</h3>
+              <p class="tag success"><?= $summary['today_orders'] ?? 0 ?></p>
+            </div>
+          </div>
+          <div class="callout">
+            API endpoints are ready. Use api_admin.php?action=get_restaurants, create_restaurant, get_users, assign_customer_role, assign_admin_role, assign_staff_role, assign_manager_role, assign_driver_role, get_all_orders
+          </div>
+        </section>
+      <?php endif; ?>
+
+      <section class="summary">
+        <h2>Your Profile</h2>
+        <p><strong>Email:</strong> <?= htmlspecialchars($_SESSION['email'] ?? '') ?></p>
+        <p><strong>Phone:</strong> <?= htmlspecialchars($_SESSION['phone'] ?? 'Not provided') ?></p>
+      </section>
+
+      <div class="actions">
+        <a href="views.php"><button class="link">View Database</button></a>
+        <form action="logout.php" method="post" style="display: inline;">
+          <button class="ghost" type="submit" name="logout" value="1">Logout</button>
+        </form>
+      </div>
+    </article>
+  </section>
+</body>
+</html>
